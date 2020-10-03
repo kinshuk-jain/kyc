@@ -1,0 +1,5 @@
+#!/bin/sh
+
+black ./
+
+pylint *.py
