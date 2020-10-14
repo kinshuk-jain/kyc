@@ -203,8 +203,6 @@ class TcpServer:
         Args:
             client_connection
             client_address
-        Returns:
-            None
         """
         # make client socket non-blocking
         client_connection.setblocking(0)
@@ -215,6 +213,18 @@ class TcpServer:
         # store the client socket in list of connections
         self._connections[client_fd] = client_connection
 
+    def _start_write(self, client_fd):
+        """For internal use only. Called when socket should check for possibility of sending data
+
+        Socket is currently reading data, also start listening to possibility of writing data. Useful for streaming
+        Args:
+            client_fd: file descriptor of client connection
+        """
+        # since request has been received, now possible to send response. So listen when can we write response
+        self._non_block_io.modify(
+            client_fd, self._non_block_io.WRITE_EVENT | self._non_block_io.READ_EVENT
+        )
+
     def _finish_write(self, client_fd):
         """Internal Only. Finished sending data to socket, no longer interested in writing or reading
 
@@ -224,11 +234,10 @@ class TcpServer:
         self._non_block_io.modify(client_fd, self._non_block_io.NO_EVENT)
 
     def _finish_read(self, client_fd):
-        """For internal use only. Called when socket should check for possibility of sending data
+        """For internal use only. Called when socket should no longer read data
 
         When request ends, remove its file descriptor's interest in read and make it
-        only interested in write so now we can write. This means that simultaneous reads
-        and writes are disabled for now
+        only interested in write
         Args:
             client_fd: file descriptor of client connection
         """
@@ -290,8 +299,6 @@ class TcpServer:
 
         Args:
             client_fd; file descriptor of client whose request is being read
-        Returns:
-            None
         """
         try:
             # remove the fd from io loop
@@ -311,8 +318,6 @@ class TcpServer:
         Args:
             client_fd: file descriptor of client whose request is being read
             event_code: event_code that triggered this read
-        Returns:
-            None
         """
         if self._non_block_io.is_read_event(event_code):
             self._read_request_async(client_fd)
@@ -329,9 +334,6 @@ class TcpServer:
         The function to listen to incoming requests using asynchronous I/O. This is a non-blocking server
         Args:
             processes: Number of processes that will accept incoming requests
-
-        Returns:
-            None
         """
         try:
             if processes > 1:
@@ -414,4 +416,5 @@ if __name__ == "__main__":
 1. Use coroutines to handle requests
 2. add logging
 3. implement timeout - when req does not end in say 10m, when resp is not sent in say 10m, use asyncio for these
+may be socket timeout? if not required remove client socket timeout variable
 """

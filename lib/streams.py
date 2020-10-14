@@ -1,16 +1,19 @@
 import io
 
 # in bytes, should be more than max possible HTTP header length
-BUFFER_SIZE = 1024 * 1024  # 1 MB
+# This is for optimization reasons and will break HTTP server if not followed
+BUFFER_SIZE = 24 * 1024  # 24 KB
 
 # ASCII value of Line feed
 EOL = 10
 
 
-class IOStream:
+class BytesIOStream:
     """Implementation of binary streams
 
-    Use write to fill the stream and read/drain to empty it
+    Use write to fill the stream and read/drain to empty it.
+    These streams allow only one event listener to be attached with them. They MUST not be extended to support
+    more than one event listener. Rather implement another stream class based on these
     """
 
     def __init__(self, stream=bytearray(b"")):
@@ -40,6 +43,12 @@ class IOStream:
         self._pause = False
 
     def off(self, event):
+        """Remove event listener.
+
+        Args:
+            event: name of event listener to remove from this stream.  If it is data event,
+                   stream will be paused also as there must be at least one consumer for stream
+        """
         if event in self._events:
             if event == "data":
                 self.pause()
@@ -132,10 +141,6 @@ class IOStream:
         """closes the stream
 
         can be called again on an already closed stream as a convenience
-        Args:
-            None
-        Returns:
-            None
         """
         # cannot close a closed stream
         if not self._closed:
@@ -144,16 +149,17 @@ class IOStream:
             del self._buf
             self._closed = True
             self.ended = True
-            if self._events["close"] and ended:
-                self._events["close"]()  # pylint: disable=not-callable
-            elif self._events["abort"] and not ended:
-                self._events["abort"]()  # pylint: disable=not-callable
+            try:
+                if self._events["close"] and ended:
+                    self._events["close"]()  # pylint: disable=not-callable
+                elif self._events["abort"] and not ended:
+                    self._events["abort"]()  # pylint: disable=not-callable
+            finally:
+                del self._events
 
     def can_write(self):
         """tells how much space in stream buffer
 
-        Args:
-            None
         Returns:
             space in stream buffer,
             0 if no space or no data listener
@@ -219,8 +225,6 @@ class IOStream:
 
         Args:
             size: size to drain
-        Returns:
-            None
         """
         self._is_closed()
         if size <= 0:
@@ -282,7 +286,7 @@ class IOStreamFactory:
 
     @staticmethod
     def getIOStream(*params, **kwargs):
-        return IOStream(*params, **kwargs)
+        return BytesIOStream(*params, **kwargs)
 
 
 if __name__ == "__main__":

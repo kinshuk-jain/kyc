@@ -2,34 +2,69 @@ from lib.tcp import server
 from lib.streams import IOStreamFactory
 from .handler import HTTPHandlerFactory
 
+__version__ = "0.1"
+
 
 class HTTPServer(server.TcpServer):
     # stores a list of handlers handling requests
     _handlers = {}
 
-    def _ready_for_response(self, client_fd):
+    def _req_ended(self, client_fd):
         """For internal use only. Called when request has ended
 
         When request ends, remove its file descriptor's interest in read and make it
         only interested in write
         """
 
-        def res_ready():
+        def handler():
             self._finish_read(client_fd)
+            # Not interested in pause/end events for request stream
+            self._handlers[client_fd].get_request().off("pause")
+            self._handlers[client_fd].get_request().off("end")
 
-        return res_ready
+        return handler
+
+    def _req_paused(self, client_fd):
+        """For internal use only. Called when request has paused
+
+        It is a hard requirement that HTTP handler must either pause or end request stream before
+        it calls route handlers.
+        When request pauses for first time, we know HTTP handler is ready to write response
+        but may not be done with request because it has not ended it
+        """
+
+        def handler():
+            self._start_write(client_fd)
+            # Not interested in pause/end events for request stream
+            self._handlers[client_fd].get_request().off("pause")
+
+        return handler
 
     def _init_request_async(self, client_conn, client_address):
+        """For internal use only. Initialize on incoming request
+
+        Args:
+            client_conn: client socket handle
+            client_address: client socket address of form (host, port)
+        """
         client_fd = client_conn.fileno()
         super()._init_request_async(client_conn, client_address)
         # initialize request for this client with an empty string of bytes
         request = IOStreamFactory.getIOStream()
-        # when request pauses, modify it to be interested only in write events
-        request.on("pause", self._ready_for_response(client_fd))
+        # client address is a tuple (host, port) or the client
+        request.client_address = client_address
+        # when request pauses or ends, modify it to be interested only in write events
+        request.on("pause", self._req_paused(client_fd))
+        request.on("end", self._req_ended(client_fd))
         # attach a handler to this request
         self._handlers[client_fd] = HTTPHandlerFactory.getRequestHandler(request)
 
     def _write_response_async(self, client_fd):
+        """For internal use only. Writes response stream to underlying tcp socket
+
+        Args:
+            client_fd: file descriptor of client whose request is being read
+        """
         # ensure get_response has response available when this is called
         try:
             response = self._handlers[client_fd].get_response()
@@ -63,12 +98,10 @@ class HTTPServer(server.TcpServer):
             del self._handlers[client_fd]
 
     def _read_request_async(self, client_fd):
-        """For internal use only. Reads incoming data from tcp and converts them into a stream
+        """For internal use only. Reads incoming data from tcp socket into a stream
 
         Args:
             client_fd: file descriptor of client whose request is being read
-        Returns:
-            None
         """
         request = self._handlers[client_fd].get_request()
         if request.can_write() >= server.TCP_READ_BUFFER_SIZE:
