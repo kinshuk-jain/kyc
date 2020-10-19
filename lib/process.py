@@ -1,3 +1,5 @@
+"""You should never need to change this module"""
+
 import os
 import signal
 import multiprocessing
@@ -70,14 +72,14 @@ class ProcessManager:
             None
         """
         # get process group id
-        process_group_id = os.getpgid()
+        process_group_id = os.getpgid(0)
         os.killpg(process_group_id, signal.SIGTERM)
 
     def kill_process(self):
         """kill current process. If it is group leader, kill all child processes too otherwise it will create zombies"""
         current_pid = os.getpid()
         # if current process is parent
-        if os.getpgid() == current_pid:
+        if os.getpgid(0) == current_pid:
             self.kill_all_processes()
         else:
             os.kill(current_pid, signal.SIGTERM)

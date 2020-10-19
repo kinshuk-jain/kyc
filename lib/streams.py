@@ -1,3 +1,5 @@
+"""You should never need to change this module"""
+
 import io
 
 # in bytes, should be more than max possible HTTP header length
@@ -16,8 +18,8 @@ class BytesIOStream:
     more than one event listener. Rather implement another stream class based on these
     """
 
-    def __init__(self, stream=bytearray(b"")):
-        self._buf = stream
+    def __init__(self):
+        self._buf = bytearray(b"")
         self._seek = 0
         # determines if stream is closed or not
         self._closed = False
@@ -49,6 +51,7 @@ class BytesIOStream:
             event: name of event listener to remove from this stream.  If it is data event,
                    stream will be paused also as there must be at least one consumer for stream
         """
+        self._is_closed()
         if event in self._events:
             if event == "data":
                 self.pause()
@@ -72,6 +75,7 @@ class BytesIOStream:
                 close: when stream is closed. In case of abort, abort is called before close
             callback: method to call on event
         """
+        self._is_ended()
         # if even not present in events list
         if event not in self._events:
             raise ValueError("{0} does not a valid stream event".format(event))
@@ -86,16 +90,20 @@ class BytesIOStream:
             self._events[event](self.read())
 
     def pause(self):
-        self._pause = True
-        if self._events["pause"]:
-            self._events["pause"]()
+        if not self._pause:
+            self._is_ended()
+            self._pause = True
+            if self._events["pause"]:
+                self._events["pause"]()
 
     def resume(self):
-        self._pause = False
-        if self._events["resume"]:
-            self._events["resume"]()
+        if self._pause:
+            self._is_ended()
+            self._pause = False
+            if self._events["resume"]:
+                self._events["resume"]()
 
-    def _error(self, msg, close_on_error=False):
+    def _error(self, err, close_on_error=False):
         """Errors out the stream
 
         if an error handler is given calls it, otherwise raises an exception
@@ -105,21 +113,25 @@ class BytesIOStream:
             close_on_error: should the stream be closed on error, only used when no event handler is registered
         """
         if self._events["error"]:
-            self._events["error"](ValueError(msg))  # pylint: disable=not-callable
+            self._events["error"](err)  # pylint: disable=not-callable
         else:
             if close_on_error:
                 self.close()
-            raise ValueError(msg)
+            raise err
 
     def _is_closed(self):
         """Used to raise exception when any operation is done on a closed stream"""
         if self._closed:
-            self._error("Operation now allowed. Stream already finished", True)
+            self._error(
+                Exception("Operation now allowed. Stream already finished"), True
+            )
 
     def _is_ended(self):
         """Used to raise exception when any operation is done on an ended stream"""
         if self.ended:
-            self._error("Operation now allowed. Stream already finished", True)
+            self._error(
+                Exception("Operation now allowed. Stream already finished"), True
+            )
 
     def end(self):
         """End the stream for reading, writing.
@@ -129,8 +141,8 @@ class BytesIOStream:
 
         can be called again on an already ended stream as a convenience
         """
+        self._is_closed()
         if not self.ended:
-            self._is_closed()
             self.ended = True
 
             # stream ended callback
@@ -182,12 +194,12 @@ class BytesIOStream:
         """
         self._is_ended()
         if not isinstance(data, (bytearray, bytes)):
-            self._error("Cannot write to byte stream")
+            self._error(ValueError("Cannot write type %s to byte stream" % type(data)))
 
         elif len(data) == 0:
             return 0
 
-        if self._seek < BUFFER_SIZE:
+        if self._seek < BUFFER_SIZE and self.can_write() > 0:
             bytes_to_write = min(len(data), BUFFER_SIZE - self._seek)
 
             if bytes_to_write > 0:
@@ -282,7 +294,7 @@ class BytesIOStream:
 
 
 class IOStreamFactory:
-    """Factory to return IOStream objects"""
+    """Factory to return BytesIOStream objects which is a stream of bytes or bytearray"""
 
     @staticmethod
     def getIOStream(*params, **kwargs):

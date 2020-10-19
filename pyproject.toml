@@ -25,3 +25,11 @@ exclude = '''
 
 # Pylint section
 [tool.pylint]
+
+# pytest section
+[tool.pytest.ini_options]
+markers = [
+    "lib: marks tests as library test",
+    "utils: marks test as util test",
+    "slow: marks tests that are slow",
+]

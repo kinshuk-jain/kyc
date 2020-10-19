@@ -3,3 +3,7 @@
 black ./
 
 pylint *.py
+
+pytest
+
+git add .

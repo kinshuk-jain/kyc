@@ -6,6 +6,12 @@ __version__ = "0.1"
 
 
 class HTTPServer(server.TcpServer):
+    """Class creating HTTP server
+
+    Uses TcpServer class. You should NEVER need to use or inherit any of the methods of this class
+    except serve
+    """
+
     # stores a list of handlers handling requests
     _handlers = {}
 
@@ -17,7 +23,7 @@ class HTTPServer(server.TcpServer):
         """
 
         def handler():
-            self._finish_read(client_fd)
+            super().finish_read(client_fd)
             # Not interested in pause/end events for request stream
             self._handlers[client_fd].get_request().off("pause")
             self._handlers[client_fd].get_request().off("end")
@@ -34,21 +40,21 @@ class HTTPServer(server.TcpServer):
         """
 
         def handler():
-            self._start_write(client_fd)
+            super().start_write(client_fd)
             # Not interested in pause/end events for request stream
             self._handlers[client_fd].get_request().off("pause")
 
         return handler
 
-    def _init_request_async(self, client_conn, client_address):
-        """For internal use only. Initialize on incoming request
+    def init_request_async(self, client_conn, client_address):
+        """Initialize on incoming request
 
         Args:
             client_conn: client socket handle
             client_address: client socket address of form (host, port)
         """
         client_fd = client_conn.fileno()
-        super()._init_request_async(client_conn, client_address)
+        super().init_request_async(client_conn, client_address)
         # initialize request for this client with an empty string of bytes
         request = IOStreamFactory.getIOStream()
         # client address is a tuple (host, port) or the client
@@ -59,8 +65,8 @@ class HTTPServer(server.TcpServer):
         # attach a handler to this request
         self._handlers[client_fd] = HTTPHandlerFactory.getRequestHandler(request)
 
-    def _write_response_async(self, client_fd):
-        """For internal use only. Writes response stream to underlying tcp socket
+    def write_response_async(self, client_fd):
+        """Writes response stream to underlying tcp socket
 
         Args:
             client_fd: file descriptor of client whose request is being read
@@ -77,13 +83,13 @@ class HTTPServer(server.TcpServer):
         # so we only peek and drain. Allows max flexibility
         data = response.peek(server.TCP_WRITE_BUFFER_SIZE)
         if len(data):
-            bytes_written = super()._write_response_async(client_fd, data)
+            bytes_written = super().write_response_async(client_fd, data)
             response.drain(bytes_written)
 
         # response stream is ended, we are done
         if response.ended:
             # remove interest in any event
-            super()._finish_write(client_fd)
+            super().finish_write(client_fd)
 
             # allow request handler to cleanup by calling close method
             self._handlers[client_fd].close()
@@ -92,25 +98,25 @@ class HTTPServer(server.TcpServer):
             # communication and thus we keep the socket open. Killing this for idle connections
             # is handled by timeouts
             if self._handlers[client_fd].close_connection():
-                super()._close_client_connection(client_fd)
+                super().close_client_connection(client_fd)
 
             # remove handler for this client socket
             del self._handlers[client_fd]
 
-    def _read_request_async(self, client_fd):
-        """For internal use only. Reads incoming data from tcp socket into a stream
+    def read_request_async(self, client_fd):
+        """Reads incoming data from tcp socket into a stream
 
         Args:
             client_fd: file descriptor of client whose request is being read
         """
         request = self._handlers[client_fd].get_request()
         if request.can_write() >= server.TCP_READ_BUFFER_SIZE:
-            data = super()._read_request_async(client_fd)
+            data = super().read_request_async(client_fd)
             if not data:
                 # if no data received after epoll trigger, means client closed connection and
                 # cannot receive any more on this socket. We might still be able to send. This
                 # can either be due to proper shutdown or due to improper close on client side.
-                # If client hangup or error occurs, it will be handled by _close_client_connection
+                # If client hangup or error occurs, it will be handled by close_client_connection
                 self._handlers[client_fd].client_closed_request()
             else:
                 try:
@@ -120,13 +126,13 @@ class HTTPServer(server.TcpServer):
                 except:
                     pass
 
-    def _close_client_connection(self, client_fd):
-        """Internal Only. Close client connection and remove associated references
+    def close_client_connection(self, client_fd):
+        """Close client connection and remove associated references
 
         Args:
             client_fd: file descriptor of client whose request is being read
         """
-        super()._close_client_connection(client_fd)
+        super().close_client_connection(client_fd)
 
         try:
             if client_fd in self._handlers:

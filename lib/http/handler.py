@@ -966,6 +966,8 @@ if __name__ == "__main__":
     pass
 
 """
+support cookies
+HTTP keep-alive
 add a router and call the right route handler in coroutine with req and res streams
 parse complete path using urllib.parse in router
 Support CORS in router
@@ -975,6 +977,6 @@ Only particular endpoints support chunked requests. For all others it must be di
 `Add comment`: if request data is a stream, route handler must end request when all data has been received. This will be
 dependent on content-length header if present. If this route also supportes chunked requests then it needs to check transfer-encoding
 header also and read accordingly. Further If `content-encoding` header is present, indicates that this data is zipped, it needs to be
-unzipped as well. Note multiple compressions i.e. content-encoding: gzip, deflate is not allowed. Clarify this point in writing route
+unzipped as well. Note multiple compressions i.e. `content-encoding: gzip, deflate` is not allowed. Clarify this point in writing route
 handler documentation
 """

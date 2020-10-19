@@ -1,7 +1,9 @@
 import socket
 import select
 import errno
-from lib.errorutils import get_errno_from_exception
+import traceback
+import sys
+from lib.utils import get_errno_from_exception
 from lib.process import ProcessManagerFactory
 from .eventloop import NonBlockingPollFactory
 
@@ -40,8 +42,8 @@ class TcpServer:
         self._request_queue_size = request_queue_size
         self._client_connection_timeout = client_connection_timeout
 
-    def _has_ipv6(self):
-        """For internal use only. Checks whether python and OS support ipv6
+    def has_ipv6(self):
+        """Checks whether python and OS support ipv6
 
         Args:
             None
@@ -83,6 +85,32 @@ class TcpServer:
             )
         return sockets
 
+    def set_tcp_keepalive(
+        self, sock, after_idle_sec=10 * 60, interval_sec=1 * 60, max_fails=5
+    ):
+        """Set TCP keepalive on an open socket.
+
+        Client side peer that are not sending data or sitting idle must be killed using
+        SO_KEEPALIVE after 15m. It activates after 10 minutes (after_idle_sec) of idleness,
+        then sends a keepalive ping once every 1 minute (interval_sec), and closes the
+        connection after 5 failed ping (max_fails), or 5 minutes. Not need when sending data
+        back to client peer as TCP has a retransmission timeout called RTO. On linux kernel it is
+        implemented using exponential backoff and takes 924 seconds(15m approx) before application
+        is notified of broken connection. This is exactly what we want
+        """
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        if sys.platform.startswith("linux"):
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, after_idle_sec)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, interval_sec)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, max_fails)
+        elif sys.platform.startswith("darwin"):
+            TCP_KEEPIDLE = 0x10
+            TCP_KEEPINTVL = 0x101
+            TCP_KEEPCNT = 0x102
+            sock.setsockopt(socket.IPPROTO_TCP, TCP_KEEPIDLE, after_idle_sec)
+            sock.setsockopt(socket.IPPROTO_TCP, TCP_KEEPINTVL, interval_sec)
+            sock.setsockopt(socket.IPPROTO_TCP, TCP_KEEPCNT, max_fails)
+
     def _bind_sockets(self):
         """For internal use only. Binds available sockets over ipv4 and ipv6
 
@@ -104,7 +132,7 @@ class TcpServer:
         # support connections over both ipv4 and ipv6
         sock_family = socket.AF_UNSPEC
 
-        if not self._has_ipv6():
+        if not self.has_ipv6():
             # OS has only ipv4 socket
             sock_family = socket.AF_INET
 
@@ -197,8 +225,12 @@ class TcpServer:
         # return all sockets available
         return sockets
 
-    def _init_request_async(self, client_connection, client_address):
-        """For internal use only. Accepts incoming requests by adding them to request pool
+    def get_open_client_connections(self):
+        """Returns a list of open client sockets"""
+        return list(self._connections.values())
+
+    def init_request_async(self, client_connection, client_address):
+        """Accepts incoming requests by adding them to request pool
 
         Args:
             client_connection
@@ -206,6 +238,8 @@ class TcpServer:
         """
         # make client socket non-blocking
         client_connection.setblocking(0)
+        # enable keep alive on client socket
+        self.set_tcp_keepalive(client_connection)
         # get client socket file descriptor
         client_fd = client_connection.fileno()
         # register this client fd for non blocking io
@@ -213,8 +247,8 @@ class TcpServer:
         # store the client socket in list of connections
         self._connections[client_fd] = client_connection
 
-    def _start_write(self, client_fd):
-        """For internal use only. Called when socket should check for possibility of sending data
+    def start_write(self, client_fd):
+        """Called when socket should check for possibility of sending data
 
         Socket is currently reading data, also start listening to possibility of writing data. Useful for streaming
         Args:
@@ -225,16 +259,16 @@ class TcpServer:
             client_fd, self._non_block_io.WRITE_EVENT | self._non_block_io.READ_EVENT
         )
 
-    def _finish_write(self, client_fd):
-        """Internal Only. Finished sending data to socket, no longer interested in writing or reading
+    def finish_write(self, client_fd):
+        """Finished sending data to socket, no longer interested in writing or reading
 
         Args:
             client_fd: file descriptor of client socket
         """
         self._non_block_io.modify(client_fd, self._non_block_io.NO_EVENT)
 
-    def _finish_read(self, client_fd):
-        """For internal use only. Called when socket should no longer read data
+    def finish_read(self, client_fd):
+        """Called when socket should no longer read data
 
         When request ends, remove its file descriptor's interest in read and make it
         only interested in write
@@ -244,8 +278,22 @@ class TcpServer:
         # since request has been received, now possible to send response. So listen when can we write response
         self._non_block_io.modify(client_fd, self._non_block_io.WRITE_EVENT)
 
-    def _read_request_async(self, client_fd):
-        """For internal use only. Reads incoming bytes
+    def _handle_socketio_error(self, client_fd, error):
+        """Internal only. Handles error during socket io operation"""
+        err_code = get_errno_from_exception(error)
+        # means operation would have blocked but this is a non-blocking socket or client crashed or peer socket timed out
+        if err_code == errno.EAGAIN or err_code == errno.EWOULDBLOCK:
+            pass
+        elif (
+            err_code == errno.ECONNRESET
+            or err_code == errno.ECONNABORTED
+            or err_code == errno.ETIMEDOUT
+            or err_code == errno.EPIPE
+        ):
+            self.close_client_connection(client_fd)
+
+    def read_request_async(self, client_fd):
+        """Reads incoming bytes
 
         Args:
             client_fd: file descriptor of client whose request is being read
@@ -258,21 +306,19 @@ class TcpServer:
             # returns bytes. If we read into buffer using memory view, it will be even
             # faster. Problem is buffer will need to be pre-allocated as it's size cannot
             # increase or decrease dynamically with memoryview
-            return self._connections[client_fd].recv(TCP_READ_BUFFER_SIZE)
+            d = self._connections[client_fd].recv(TCP_READ_BUFFER_SIZE)
 
+            # if client sent empty data, means it closed connection. It might still be possible
+            # to write, but reading client data is not possible
+            if not d:
+                self._non_block_io.modify(client_fd, self._non_block_io.NO_EVENT)
+
+            return d
         except OSError as e:
-            err_code = get_errno_from_exception(e)
-            # means operation would have blocked but this is a non-blocking socket or client crashed or peer socket timed out
-            if (
-                err_code == errno.EAGAIN
-                or err_code == errno.EWOULDBLOCK
-                or err_code == errno.ECONNRESET
-                or err_code == errno.ETIMEDOUT
-            ):
-                pass
+            self._handle_socketio_error(client_fd, e)
 
-    def _write_response_async(self, client_fd, data):
-        """For internal use only. Writes data to socket
+    def write_response_async(self, client_fd, data=None):
+        """Writes data to socket
 
         Args:
             client_fd: file descriptor of client whose request is being read
@@ -281,27 +327,28 @@ class TcpServer:
             size of data written
         """
         try:
+            if not data:
+                return 0
+
             # it is possible that all data might not have been written
             return self._connections[client_fd].send(data)
         except OSError as e:
-            err_code = get_errno_from_exception(e)
-            # means operation would have blocked but this is a non-blocking socket or client crashed or peer socket timed out
-            if (
-                err_code == errno.EAGAIN
-                or err_code == errno.EWOULDBLOCK
-                or err_code == errno.ECONNRESET
-                or err_code == errno.ETIMEDOUT
-            ):
-                pass
+            self._handle_socketio_error(client_fd, e)
 
-    def _close_client_connection(self, client_fd):
-        """For internal use only. Closes client connection
+    def close_client_connection(self, client_fd):
+        """Closes client connection
 
         Args:
             client_fd; file descriptor of client whose request is being read
         """
         try:
-            # remove the fd from io loop
+            # see comment below to understand why this is needed. If unregister does not work
+            # and for some reason socket is not closed, no epoll event should occur for this
+            self._non_block_io.modify(client_fd, self._non_block_io.NO_EVENT)
+
+            # remove the fd from io loop. Note this has no meaning if we dont close socket.
+            # If there is even one fd that refers to the underlying file description in epoll set
+            # this will not unregister it. Thus sockets must be closed after this
             self._non_block_io.unregister(client_fd)
 
             # close client connection and delete it
@@ -320,13 +367,13 @@ class TcpServer:
             event_code: event_code that triggered this read
         """
         if self._non_block_io.is_read_event(event_code):
-            self._read_request_async(client_fd)
+            self.read_request_async(client_fd)
         elif self._non_block_io.is_write_event(event_code):
-            self._write_response_async(client_fd)
+            self.write_response_async(client_fd)
         elif self._non_block_io.is_hup_event(
             event_code
         ) or self._non_block_io.is_err_event(event_code):
-            self._close_client_connection(client_fd)
+            self.close_client_connection(client_fd)
 
     def serve(self, processes=1):
         """Starts the server that listens on PORT and HOST
@@ -377,13 +424,14 @@ class TcpServer:
                                 raise
                         # release lock here if implemented, add logic to not
                         # release it multiple times as this is in a loop
-                        self._init_request_async(connection, address)
+                        self.init_request_async(connection, address)
                     else:
                         # release lock here too if implemented, add logic to not
                         # release it multiple times as this is in a loop
                         self._handle_poll(client_fd, event_code)
 
-        except:
+        except Exception:
+            traceback.print_exc()
             print("Exception occurred. Server shutting down ...")
 
         finally:
@@ -415,6 +463,4 @@ if __name__ == "__main__":
 """
 1. Use coroutines to handle requests
 2. add logging
-3. implement timeout - when req does not end in say 10m, when resp is not sent in say 10m, use asyncio for these
-may be socket timeout? if not required remove client socket timeout variable
 """

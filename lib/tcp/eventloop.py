@@ -1,3 +1,5 @@
+"""You should never need to change this module"""
+
 import select
 
 

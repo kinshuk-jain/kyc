@@ -38,8 +38,18 @@ if the script doesnt work.
 - Run: `pipenv run python3 main.py`
 
 
+### Testing
+
+Tests are written using pytest. They can be run using `pytest`. These will run all the tests.
+All other options offered by pytest apply. Run individual test using `pytest -k 'test_name'`.
+Run a specific marker test using `pytest -m 'marker_name'`. For more see - https://docs.pytest.org/en/stable/reference.html#command-line-flags
+
+When you write unit/integration tests, test only the behavior of the system under test. Do not test
+implementation details. Do not test, what a function returns, what parameters it expects, whether it's
+variables or class properties have desired values. Test whether the system behaves as it should.
+
+
 ### Installing dependencies 
 
 - To install dev dependency - `pipenv install <dependency> --dev`
-
 - To install a non-dev dependency - `pipenv install <dependency>`
