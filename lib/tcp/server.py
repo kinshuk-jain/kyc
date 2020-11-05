@@ -247,35 +247,23 @@ class TcpServer:
         # store the client socket in list of connections
         self._connections[client_fd] = client_connection
 
-    def start_write(self, client_fd):
-        """Called when socket should check for possibility of sending data
-
-        Socket is currently reading data, also start listening to possibility of writing data. Useful for streaming
-        Args:
-            client_fd: file descriptor of client connection
-        """
-        # since request has been received, now possible to send response. So listen when can we write response
-        self._non_block_io.modify(
-            client_fd, self._non_block_io.WRITE_EVENT | self._non_block_io.READ_EVENT
-        )
-
-    def finish_write(self, client_fd):
-        """Finished sending data to socket, no longer interested in writing or reading
+    def remove_all_events(self, client_fd):
+        """Used to remove interest in any event on poll
 
         Args:
             client_fd: file descriptor of client socket
         """
         self._non_block_io.modify(client_fd, self._non_block_io.NO_EVENT)
 
-    def finish_read(self, client_fd):
-        """Called when socket should no longer read data
+    def start_write(self, client_fd):
+        """Called when socket should start writing data
 
-        When request ends, remove its file descriptor's interest in read and make it
-        only interested in write
+        When ready to send, make client connection socket file descriptor interested
+        only in write
         Args:
             client_fd: file descriptor of client connection
         """
-        # since request has been received, now possible to send response. So listen when can we write response
+        # listen when can we write response
         self._non_block_io.modify(client_fd, self._non_block_io.WRITE_EVENT)
 
     def _handle_socketio_error(self, client_fd, error):

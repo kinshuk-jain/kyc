@@ -84,10 +84,22 @@ REASON_CODES = {
 
 
 class HTTPResponseHandler:
-    """Class for handling http response. Supports HTTP/0.9, HTTP/1.0, HTTP/1.1"""
+    """Class for handling http response. Supports HTTP/0.9, HTTP/1.0, HTTP/1.1
 
-    def __init__(self, version="HTTP/1.1", method="GET", path="", headers=None):
-        self._response_stream = streams.IOStreamFactory.getIOStream()
+    It is a hard requirement that request stream must have ended before response can be sent.
+    Otherwise browsers show unexpeted behaviours
+    """
+
+    def __init__(
+        self,
+        response_stream=streams.IOStreamFactory.getIOStream(),
+        version="HTTP/1.1",
+        method="GET",
+        path="",
+        headers=None,
+    ):
+        self._response_stream = response_stream
+        self._response_stream.on("data", lambda x: 0)
         self._request_version = version
         self._method = method
         self._path = path
@@ -99,6 +111,7 @@ class HTTPResponseHandler:
         self._response_stream.send_header = self.send_header
         self._response_stream.redirect = self.redirect
         self._response_stream.send_stream = self.send_stream
+        self._response_stream.close_connection = self.close_connection
 
     def _check_status_code(self, code):
         """Check validity of status code. Internal only"""
@@ -115,21 +128,21 @@ class HTTPResponseHandler:
             message: response body to send. Can be of type string, list, array, tuple, dict or stringified html
         """
         self._check_status_code(code)
-
+        ctype = ""
         if hasattr(self, "_send_in_progress"):
             raise Exception("Cant send again")
 
         if message == None:
-            self.send_header("Content-Type", "text/html;charset=utf-8")
+            ctype = "text/html;charset=utf-8"
             message = ""
         elif type(message) == dict or type(message) == list:
-            self.send_header("Content-Type", "application/json")
+            ctype = "application/json"
             try:
                 message = json.dumps(message, check_circular=False)
             except (SyntaxError, TypeError):
                 raise ValueError("Message not a valid JSON")
         elif type(message) == str:
-            self.send_header("Content-Type", "text/html;charset=utf-8")
+            ctype = "text/html;charset=utf-8"
         else:
             raise ValueError("Cannot send message of type %s" % type(message))
 
@@ -153,6 +166,7 @@ class HTTPResponseHandler:
             message = html.escape(message, quote=False)
             body = message.encode("UTF-8", "replace") + b"\r\n"
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Type", ctype)
 
         self.send_header("Date", self._date_time_string())
         self._end_headers()
@@ -162,6 +176,7 @@ class HTTPResponseHandler:
         if self._method != "HEAD" and body:
             self._message_view = memoryview(b"".join(self._headers) + body)
             del self._headers
+            self._response_stream._start_response(self._response_stream.client.fileno())
             self._response_stream.on("drain", self._send)
             self._send()
 
@@ -203,6 +218,7 @@ class HTTPResponseHandler:
         self._end_headers()
         self._send_in_progress = True
         self._input_stream = input_stream
+        self._response_stream._start_response(self._response_stream.client.fileno())
         self._response_stream.on("drain", self._stream)
         self._stream()
 
@@ -351,6 +367,7 @@ class HTTPResponseHandler:
 
             # send file
             self._input_stream = f
+            self._response_stream._start_response(self._response_stream.client.fileno())
             self._response_stream.on("drain", self._stream)
             self._stream()
         except:
@@ -381,6 +398,7 @@ class HTTPResponseHandler:
         self._message_view = memoryview(b"".join(self._headers))
         del self._headers
         self._send_in_progress = True
+        self._response_stream._start_response(self._response_stream.client.fileno())
         self._response_stream.on("drain", self._send)
         self._send()
 
@@ -417,12 +435,12 @@ class HTTPResponseHandler:
             code: Status code
             message: short message to set in HTTP response status line
         """
-        if self.request_version != "HTTP/0.9":
+        if self._request_version != "HTTP/0.9":
             if message == None:
                 try:
                     message = REASON_CODES[code]
                 except KeyError:
-                    message = ""
+                    message = "???"
             self._headers.append(
                 ("%s %d %s\r\n" % (self._request_version, code, message)).encode(
                     HEADER_ENCODING_DEFAULT, "strict"
@@ -480,19 +498,21 @@ class HTTPResponseHandler:
 
 class HTTPRequestHandler:
     """Class to handle incoming http requests and parse body if possible. Supports HTTP/0.9, HTTP/1.0, HTTP/1.1
+
     TODO: Support HTTP 2.0 using https://python-hyper.org/projects/hyper-h2/en/stable/basic-usage.html
     """
 
     _header_length = 0
     _requestline = ""
 
-    def __init__(self, request_stream):
+    def __init__(self, request_stream, response_stream):
         """Init
 
         Args:
             request_stream: The request stream for which this handler was created
         """
         self._request_stream = request_stream
+        self._response_stream = response_stream
         self._request_stream.on("data", self._read_request)
 
     def send_error(self, *args):
@@ -670,7 +690,7 @@ class HTTPRequestHandler:
             return True
         return False
 
-    def _should_read_body(self, data_len):
+    def _should_read_body(self):
         """Internal Only. Checks whether body should be read and parsed or ignored for router handler
         to take care of. If body should be ignored, it creates response
 
@@ -819,9 +839,11 @@ class HTTPRequestHandler:
         Args:
             load_router: if true, also call router
         """
-        # create response stream
-        if not hasattr(self, "_response_stream"):
+        # initialize response stream
+        if not hasattr(self._response_stream, "init"):
+            self._response_stream.init = True
             response_handler = HTTPResponseHandler(
+                response_stream=self._response_stream,
                 version=self._request_stream.http_version
                 if hasattr(self._request_stream, "http_version")
                 else None,
@@ -835,7 +857,6 @@ class HTTPRequestHandler:
                 if hasattr(self._request_stream, "headers")
                 else None,
             )
-            self._response_stream = response_handler.get_response()
             # IMPORTANT: Call only after response stream is set
             # Remove data listener as we are no longer interested in this
             self._request_stream.off("data")
@@ -847,6 +868,7 @@ class HTTPRequestHandler:
                 # call route handler and pass it request, response streams
                 # Req.body may or may not be present
                 # TODO: load router
+                # self._response_stream.send_response(200, {"a": 1})
                 # detach read body handler?
                 pass
 
@@ -913,13 +935,13 @@ class HTTPRequestHandler:
 
     def close_connection(self):
         """Returns whether TCP connection should be kept alive or closed after request"""
-        if hasattr(self, "_response_stream"):
+        if hasattr(self._response_stream, "init"):
             return self._close_connection or self._response_stream.close_connection()
         return self._close_connection
 
     def get_response(self):
         """Returns the response stream if available otherwise raises exception"""
-        if hasattr(self, "_response_stream"):
+        if hasattr(self._response_stream, "init"):
             return self._response_stream
         raise Exception("response not available")
 
@@ -946,11 +968,10 @@ class HTTPRequestHandler:
     def close(self):
         """Perform cleanup when handler is no longer needed"""
         self._request_stream.close()
+        self._response_stream.close()
         if hasattr(self, "_body"):
             del self._body
             del self._body_view
-        if hasattr(self, "_response_stream"):
-            self._response_stream.close()
 
 
 class HTTPHandlerFactory:
@@ -978,5 +999,5 @@ Only particular endpoints support chunked requests. For all others it must be di
 dependent on content-length header if present. If this route also supportes chunked requests then it needs to check transfer-encoding
 header also and read accordingly. Further If `content-encoding` header is present, indicates that this data is zipped, it needs to be
 unzipped as well. Note multiple compressions i.e. `content-encoding: gzip, deflate` is not allowed. Clarify this point in writing route
-handler documentation
+handler documentation. Do not overwrite req end handler and res data handler
 """

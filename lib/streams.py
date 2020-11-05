@@ -44,6 +44,10 @@ class BytesIOStream:
         self.ended = False
         self._pause = False
 
+    def is_empty(self):
+        """Returns true if stream buffer is empty false otherwise"""
+        return self._seek <= 0
+
     def off(self, event):
         """Remove event listener.
 

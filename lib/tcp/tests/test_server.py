@@ -144,8 +144,8 @@ class TestServer:
         [s1, s2] = TestServer.server_obj.get_open_client_connections()[-2:]
         fd1 = s1.fileno()
         fd2 = s2.fileno()
-        TestServer.server_obj.finish_read(fd1)
-        TestServer.server_obj.finish_read(fd2)
+        TestServer.server_obj.start_write(fd1)
+        TestServer.server_obj.start_write(fd2)
         s1.close()
         s2.close()
         b = TestServer.server_obj.write_response_async(fd1, b"abcdef")
@@ -160,8 +160,8 @@ class TestServer:
         [s1, s2] = TestServer.server_obj.get_open_client_connections()[-2:]
         fd1 = s1.fileno()
         fd2 = s2.fileno()
-        TestServer.server_obj.finish_read(fd1)
-        TestServer.server_obj.finish_read(fd2)
+        TestServer.server_obj.start_write(fd1)
+        TestServer.server_obj.start_write(fd2)
         TestServer.server_obj.write_response_async(fd1, b"abcdef")
         TestServer.server_obj.write_response_async(fd2, b"rstuvw")
         data1 = get_client_ipv4.recv(1024)
@@ -183,8 +183,8 @@ class TestServer:
         [s1, s2] = TestServer.server_obj.get_open_client_connections()[-2:]
         fd1 = s1.fileno()
         fd2 = s2.fileno()
-        TestServer.server_obj.finish_read(fd1)
-        TestServer.server_obj.finish_read(fd2)
+        TestServer.server_obj.start_write(fd1)
+        TestServer.server_obj.start_write(fd2)
         len1 = TestServer.server_obj.write_response_async(fd1, b"abcdef")
         len2 = TestServer.server_obj.write_response_async(fd2, b"rstuvw")
         len3 = TestServer.server_obj.write_response_async(fd2, b"")
@@ -279,8 +279,10 @@ class TestServer:
         assert s.getsockopt(socket.IPPROTO_TCP, 0x101) == 60
         assert s.getsockopt(socket.IPPROTO_TCP, 0x102) == 5
 
-
-# start_write, finish_read, finish_write work as expected
-
-# TODO: code improvements
-# register interest in write event on epoll when sending response and not when request is finished
+    def test_remove_all_events(self, monkeypatch):
+        dummy = mock.Mock()
+        monkeypatch.setattr(eventloop.NonBlockingPoll, "modify", dummy)
+        TestServer.server_obj.remove_all_events(12)
+        dummy.assert_called_with(12, io_loop.NO_EVENT)
+        TestServer.server_obj.start_write(21)
+        dummy.assert_called_with(21, io_loop.WRITE_EVENT)

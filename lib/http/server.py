@@ -23,26 +23,9 @@ class HTTPServer(server.TcpServer):
         """
 
         def handler():
-            super().finish_read(client_fd)
-            # Not interested in pause/end events for request stream
-            self._handlers[client_fd].get_request().off("pause")
+            self.remove_all_events(client_fd)
+            # Not interested in end events for request stream
             self._handlers[client_fd].get_request().off("end")
-
-        return handler
-
-    def _req_paused(self, client_fd):
-        """For internal use only. Called when request has paused
-
-        It is a hard requirement that HTTP handler must either pause or end request stream before
-        it calls route handlers.
-        When request pauses for first time, we know HTTP handler is ready to write response
-        but may not be done with request because it has not ended it
-        """
-
-        def handler():
-            super().start_write(client_fd)
-            # Not interested in pause/end events for request stream
-            self._handlers[client_fd].get_request().off("pause")
 
         return handler
 
@@ -55,15 +38,19 @@ class HTTPServer(server.TcpServer):
         """
         client_fd = client_conn.fileno()
         super().init_request_async(client_conn, client_address)
-        # initialize request for this client with an empty string of bytes
+        # initialize request/response for this client with an empty string of bytes
         request = IOStreamFactory.getIOStream()
+        response = IOStreamFactory.getIOStream()
+        response._start_response = self.start_write
+        response.client = client_conn
         # client address is a tuple (host, port) or the client
         request.client_address = client_address
-        # when request pauses or ends, modify it to be interested only in write events
-        request.on("pause", self._req_paused(client_fd))
+        # when request ends, modify it to remove interest in read event
         request.on("end", self._req_ended(client_fd))
         # attach a handler to this request
-        self._handlers[client_fd] = HTTPHandlerFactory.getRequestHandler(request)
+        self._handlers[client_fd] = HTTPHandlerFactory.getRequestHandler(
+            request, response
+        )
 
     def write_response_async(self, client_fd):
         """Writes response stream to underlying tcp socket
@@ -87,9 +74,9 @@ class HTTPServer(server.TcpServer):
             response.drain(bytes_written)
 
         # response stream is ended, we are done
-        if response.ended:
+        if response.ended and response.is_empty():
             # remove interest in any event
-            super().finish_write(client_fd)
+            super().remove_all_events(client_fd)
 
             # allow request handler to cleanup by calling close method
             self._handlers[client_fd].close()
@@ -112,6 +99,7 @@ class HTTPServer(server.TcpServer):
         request = self._handlers[client_fd].get_request()
         if request.can_write() >= server.TCP_READ_BUFFER_SIZE:
             data = super().read_request_async(client_fd)
+
             if not data:
                 # if no data received after epoll trigger, means client closed connection and
                 # cannot receive any more on this socket. We might still be able to send. This
