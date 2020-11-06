@@ -59,7 +59,6 @@ class TestServerBinding:
         # we throw a exception in accept method of socket to come out of infinite loop in serve function.
         # for some reason pytest hangs if we use a random exception here
         dummy_server.serve(processes=2)
-        print(dummy_server.read_request_async.mock_calls)
         expected = []
         if dummy_server.has_ipv6:
             expected = [

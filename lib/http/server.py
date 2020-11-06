@@ -124,10 +124,6 @@ class HTTPServer(server.TcpServer):
 
         try:
             if client_fd in self._handlers:
-                request = self._handlers[client_fd].get_request()
-                request.close()
-                response = self._handlers[client_fd].get_response()
-                response.close()
                 self._handlers[client_fd].close()
                 del self._handlers[client_fd]
         except:
