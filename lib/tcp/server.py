@@ -93,7 +93,7 @@ class TcpServer:
         Client side peer that are not sending data or sitting idle must be killed using
         SO_KEEPALIVE after 15m. It activates after 10 minutes (after_idle_sec) of idleness,
         then sends a keepalive ping once every 1 minute (interval_sec), and closes the
-        connection after 5 failed ping (max_fails), or 5 minutes. Not need when sending data
+        connection after 5 failed ping (max_fails), or 5 minutes. Not needed when sending data
         back to client peer as TCP has a retransmission timeout called RTO. On linux kernel it is
         implemented using exponential backoff and takes 924 seconds(15m approx) before application
         is notified of broken connection. This is exactly what we want
@@ -449,6 +449,7 @@ if __name__ == "__main__":
     pass
 
 """
+TODO:
 1. Use coroutines to handle requests
 2. add logging
 """

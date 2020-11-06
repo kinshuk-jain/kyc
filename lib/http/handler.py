@@ -120,6 +120,10 @@ class HTTPResponseHandler:
         elif type(code) != int:
             raise ValueError("status code should be of type int")
 
+    def _set_common_headers(self):
+        """Internal Only. Used to set common headers for all responses"""
+        self.send_header("Date", self._date_time_string())
+
     def send_response(self, code, message=None):
         """Send http response. Can be used to send a valid or error response of type html, text or json
 
@@ -168,7 +172,7 @@ class HTTPResponseHandler:
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Type", ctype)
 
-        self.send_header("Date", self._date_time_string())
+        self._set_common_headers()
         self._end_headers()
 
         self._send_in_progress = True
@@ -209,7 +213,7 @@ class HTTPResponseHandler:
 
         self._set_response_statusline(code, reason)
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Date", self._date_time_string())
+        self._set_common_headers()
         # only work on https
         self.send_header(
             "Strict-Transport-Security",
@@ -347,7 +351,7 @@ class HTTPResponseHandler:
             self.send_header("Content-type", content_type)
             self.send_header("Content-Length", str(fs[6]))
             self.send_header("Last-Modified", self._date_time_string(fs.st_mtime))
-            self.send_header("Date", self._date_time_string())
+            self._set_common_headers()
 
             # only work on https
             self.send_header(
@@ -394,6 +398,7 @@ class HTTPResponseHandler:
             msg = "???"
         self._set_response_statusline(code, msg)
         self.send_header("Location", location)
+        self._set_common_headers()
         self._end_headers()
         self._message_view = memoryview(b"".join(self._headers))
         del self._headers
@@ -497,10 +502,7 @@ class HTTPResponseHandler:
 
 
 class HTTPRequestHandler:
-    """Class to handle incoming http requests and parse body if possible. Supports HTTP/0.9, HTTP/1.0, HTTP/1.1
-
-    TODO: Support HTTP 2.0 using https://python-hyper.org/projects/hyper-h2/en/stable/basic-usage.html
-    """
+    """Class to handle incoming http requests and parse body if possible. Supports HTTP/0.9, HTTP/1.0, HTTP/1.1"""
 
     _header_length = 0
     _requestline = ""
@@ -685,6 +687,7 @@ class HTTPRequestHandler:
 
             # see if connection is to be closed
             conntype = self._request_stream.headers.get("Connection", "").lower()
+            # we do not support persistent connection for http/1.0
             if conntype == "close" or self._request_stream.http_version < "HTTP/1.1":
                 self._close_connection = True
             return True
@@ -987,17 +990,6 @@ if __name__ == "__main__":
     pass
 
 """
+TODO:
 support cookies
-HTTP keep-alive
-add a router and call the right route handler in coroutine with req and res streams
-parse complete path using urllib.parse in router
-Support CORS in router
-Have a generic exception handler as a wrapper over router to catch all exceptions and do nothing
-Only particular endpoints support chunked requests. For all others it must be disabled by default
-
-`Add comment`: if request data is a stream, route handler must end request when all data has been received. This will be
-dependent on content-length header if present. If this route also supportes chunked requests then it needs to check transfer-encoding
-header also and read accordingly. Further If `content-encoding` header is present, indicates that this data is zipped, it needs to be
-unzipped as well. Note multiple compressions i.e. `content-encoding: gzip, deflate` is not allowed. Clarify this point in writing route
-handler documentation. Do not overwrite req end handler and res data handler
 """

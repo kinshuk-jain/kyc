@@ -152,6 +152,3 @@ class TestHttpServer:
         write_mock.remove_all_events.assert_called_once_with(fd)
         handler_mock.close_connection.assert_called()
         write_mock.close_client_connection.assert_called_once_with(fd)
-
-
-# removes handler from req stream on end

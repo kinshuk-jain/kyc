@@ -36,3 +36,13 @@ class Router:
     # allow router to be attached to sub routes
     # add a catch all route for errors
     # export router singleton
+
+
+"""
+TODO:
+add a router and call the right route handler in coroutine with req and res streams
+parse complete path using urllib.parse in router
+Support CORS in router
+Have a generic exception handler as a wrapper over router to catch all exceptions and do nothing
+Only particular endpoints support chunked requests. For all others it must be disabled by default
+"""
