@@ -1,9 +1,12 @@
 #!/bin/sh
 
 black ./
+sleep .1
 
 pylint *.py
+sleep .1
 
 pytest
+sleep .1
 
 git add .
