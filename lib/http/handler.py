@@ -7,10 +7,14 @@ import datetime
 import os
 import gzip
 import hashlib
+from urllib.parse import parse_qs
 from lib import streams
 from lib import utils
+from lib.http import router
 from http import client
 from http import HTTPStatus
+from http import cookies
+
 
 EOL1 = b"\n\n"
 EOL2 = b"\n\r\n"
@@ -516,6 +520,7 @@ class HTTPRequestHandler:
         self._request_stream = request_stream
         self._response_stream = response_stream
         self._request_stream.on("data", self._read_request)
+        self._request_stream.get_cookie = self.get_cookie
 
     def send_error(self, *args):
         self._create_response(request_end=True, load_router=False)
@@ -682,12 +687,14 @@ class HTTPRequestHandler:
                 expect.lower() == "100-continue"
                 and self._request_stream.http_version >= "HTTP/1.1"
             ):
+                self._create_response(load_router=False, request_end=True)
                 self._response_stream.send_response(HTTPStatus.CONTINUE)
                 return True
 
             # see if connection is to be closed
             conntype = self._request_stream.headers.get("Connection", "").lower()
-            # we do not support persistent connection for http/1.0
+            # we do not support persistent connection for http/1.0 as only a very small
+            # number of applications still use it and it's not worth the effort of implementation
             if conntype == "close" or self._request_stream.http_version < "HTTP/1.1":
                 self._close_connection = True
             return True
@@ -700,7 +707,8 @@ class HTTPRequestHandler:
         Body if passed for GET, OPTIONS, HEAD, TRACE, CONNECT will be ignored
         Similarly if content-type is not text/* or application/json or application/x-www-form-urlencoded
         body will be ignored and must be handled by router handler.
-        If transfer-encoding header is chunked, body is ignored and must be handler by router handler.
+        If transfer-encoding header is chunked, it is not supported as it increases vulnerability to attacks and is not widely used
+        This server can however send chunked responses
 
         Returns:
         A bool tuple with first part indicating whether we will buffer body to parse it later, second part
@@ -721,16 +729,11 @@ class HTTPRequestHandler:
             self._request_stream.headers.get("transfer-encoding", "").lower()
             == "chunked"
         ):
-            if self._request_stream.http_version == "HTTP/1.1":
-                # mark that this request body is a stream
-                self._request_stream.stream_body = True
-                self._create_response()
-            else:
-                self.send_error(
-                    HTTPStatus.BAD_REQUEST,
-                    "Transfer-Encoding header not supported by %s"
-                    % self._request_stream.http_version,
-                )
+            self.send_error(
+                HTTPStatus.BAD_REQUEST,
+                "Transfer-Encoding header not supported by %s"
+                % self._request_stream.http_version,
+            )
             return False
 
         if not (
@@ -826,6 +829,7 @@ class HTTPRequestHandler:
 
             # Evaluate headers and start reading body
             if successful_headers:
+                self._request_stream.body = {}
                 self._buffer_body = self._should_read_body()
                 # read part minus header length
                 self._read_body(len(data) - new_headers)
@@ -869,11 +873,9 @@ class HTTPRequestHandler:
 
             if load_router:
                 # call route handler and pass it request, response streams
-                # Req.body may or may not be present
-                # TODO: load router
+                # load router
+                router.on_request(self._request_stream, self._response_stream)
                 # self._response_stream.send_response(200, {"a": 1})
-                # detach read body handler?
-                pass
 
     def _parse_body(self):
         """Internal only. Parses request body of type application/json; text/ and application/x-www-form-urlencoded
@@ -896,7 +898,6 @@ class HTTPRequestHandler:
 
         # since body is bytearray/bytes, change it to string
         self._body = self._body.decode(BODY_ENCODING_DEFAULT)
-        self._request_stream.body = {}
 
         if self._content_type == "" or self._content_type.startswith("text/"):
             # type is text
@@ -916,19 +917,7 @@ class HTTPRequestHandler:
                 return
         elif self._content_type.startswith("application/x-www-form-urlencoded"):
             # form url encoded  body of type field1=value1&field2=value2
-            def convert(val):
-                # make sure user provided input is only a string
-                f = str(val).split("=")
-                if len(f) == 2:
-                    k, v = f
-                    # no need to remove special characters from k if any
-                    # as we made sure everything is a string
-                    # remove not allowed/invalid string chars in dictionaries
-                    k = k.rstrip("\r\n ")
-                    if len(k):
-                        self._request_stream.body[k] = v
-
-            map(convert, self._body.split("&"))
+            self._request_stream.body = parse_qs(str(self._body))
             del self._body
             return
         else:
@@ -947,6 +936,28 @@ class HTTPRequestHandler:
         if hasattr(self._response_stream, "init"):
             return self._response_stream
         raise Exception("response not available")
+
+    def get_cookie(self):
+        """Get cookies from cookie header in request and return result as parsed dict
+
+        Returns:
+        A dict that has cookie name and value if cookies are availabe
+        """
+        if not hasattr(self._request_stream, "cookies"):
+            if not hasattr(self._request_stream, "headers"):
+                return {}
+            cookie = self._request_stream.headers.get("cookie", "")
+            if not cookie:
+                return {}
+            try:
+                self._request_stream.cookies = {}
+                sc = cookies.SimpleCookie(cookie)
+                for key, morsel in sc.items():
+                    self._request_stream.cookies[key] = morsel.value
+            except cookies.CookieError:
+                return {}
+        else:
+            return self._request_stream.cookies
 
     def client_closed_request(self):
         """Called when client closed connection
@@ -988,8 +999,3 @@ class HTTPHandlerFactory:
 if __name__ == "__main__":
     # code for tests and logic to run only this module goes here
     pass
-
-"""
-TODO:
-support cookies
-"""

@@ -3,7 +3,6 @@
 - Python server behind nginx (provides a lot of features like SSL termination, compression, rate limiting, HTTP/2.0 etc that we do not need to implement ourselves)
 - Linux kernel version 4.5+
 
-
 ### Setup project(Manual)
 
 Note: Recommended way to setup the project is to run `./setup.sh <development|production>` from project root. This guide explains what to do

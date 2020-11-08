@@ -449,7 +449,5 @@ if __name__ == "__main__":
     pass
 
 """
-TODO:
-1. Use coroutines to handle requests
-2. add logging
+TODO: add logging
 """
